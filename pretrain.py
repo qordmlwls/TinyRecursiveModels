@@ -302,6 +302,8 @@ def train_batch(config: PretrainConfig, train_state: TrainState, batch: Any, glo
     # Forward
     train_state.carry, loss, metrics, _, _ = train_state.model(carry=train_state.carry, batch=batch, return_keys=[])
 
+    # Ensure loss is in float32 for stable backward when model runs in mixed precision
+    loss = loss.to(torch.float32)
     ((1 / global_batch_size) * loss).backward()
 
     # Allreduce

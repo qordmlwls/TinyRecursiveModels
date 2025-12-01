@@ -58,16 +58,21 @@ class ACTLossHead(nn.Module):
         new_carry, outputs = self.model(**model_kwargs)
         labels = new_carry.current_data["labels"]
 
+        # Cast logits to float32 for stable loss computation in mixed precision
+        logits_f = outputs["logits"].to(torch.float32)
+        q_halt_logits_f = outputs["q_halt_logits"].to(torch.float32)
+        q_continue_logits_f = outputs["q_continue_logits"].to(torch.float32) if "q_continue_logits" in outputs else None
+
         with torch.no_grad():
             # Preds
-            outputs["preds"] = torch.argmax(outputs["logits"], dim=-1)
+            outputs["preds"] = torch.argmax(logits_f, dim=-1)
 
             # Correctness
             mask = (labels != IGNORE_LABEL_ID)
             loss_counts = mask.sum(-1)
             loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1)  # Avoid NaNs in division
 
-            is_correct = mask & (torch.argmax(outputs["logits"], dim=-1) == labels)
+            is_correct = mask & (torch.argmax(logits_f, dim=-1) == labels)
             seq_is_correct = is_correct.sum(-1) == loss_counts
             
             # Metrics (halted)
@@ -84,20 +89,31 @@ class ACTLossHead(nn.Module):
 
         # Losses
 
-        lm_loss = (self.loss_fn(outputs["logits"], labels, ignore_index=IGNORE_LABEL_ID, valid_mask=mask) / loss_divisor).sum()
-        q_halt_loss = F.binary_cross_entropy_with_logits(outputs["q_halt_logits"], seq_is_correct.to(outputs["q_halt_logits"].dtype), reduction="sum")
+        lm_loss = (self.loss_fn(logits_f, labels, ignore_index=IGNORE_LABEL_ID, valid_mask=mask) / loss_divisor).sum()
+        q_halt_loss = F.binary_cross_entropy_with_logits(
+            q_halt_logits_f,
+            seq_is_correct.to(q_halt_logits_f.dtype),
+            reduction="sum",
+        )
         metrics.update({
             "lm_loss": lm_loss.detach(),
             "q_halt_loss": q_halt_loss.detach(),
         })
         # Q continue (bootstrapping target loss); Alexia: This fits Q-learning, but seems totally unecessary
         q_continue_loss = 0
-        if "target_q_continue" in outputs:
-            q_continue_loss = F.binary_cross_entropy_with_logits(outputs["q_continue_logits"], outputs["target_q_continue"], reduction="sum")
+        if "target_q_continue" in outputs and q_continue_logits_f is not None:
+            target_q = outputs["target_q_continue"].to(torch.float32)
+            q_continue_loss = F.binary_cross_entropy_with_logits(q_continue_logits_f, target_q, reduction="sum")
 
             metrics["q_continue_loss"] = q_continue_loss.detach()
+        # Keep accumulation in float32 for stable backward on mixed-precision models
+        total_loss = (lm_loss + 0.5 * (q_halt_loss + q_continue_loss)).to(torch.float32)
+        if "aux_loss" in outputs:
+            aux = outputs["aux_loss"].to(torch.float32)
+            total_loss = total_loss + aux
+            metrics["aux_loss"] = aux.detach()
+
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
-        return new_carry, lm_loss + 0.5 * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
-
+        return new_carry, total_loss, metrics, detached_outputs, new_carry.halted.all()

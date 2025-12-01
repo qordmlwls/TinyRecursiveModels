@@ -1,0 +1,42 @@
+name: tr2@TR2
+loss:
+  name: losses@ACTLossHead
+  loss_type: stablemax_cross_entropy
+
+# Core/recursion hyper-parameters
+H_cycles: 3
+L_cycles: 4
+H_layers: 0
+L_layers: 2
+halt_exploration_prob: 0.1
+halt_max_steps: 16
+
+hidden_size: 512
+num_heads: 8
+expansion: 4
+pos_encodings: rope
+forward_dtype: bfloat16
+
+puzzle_emb_ndim: ${.hidden_size}
+puzzle_emb_len: 16
+mlp_t: False
+no_ACT_continue: True
+
+# Beam-search knobs (modest defaults)
+beam_size: 2
+branch_factor: 2
+ucb_alpha: 0.4
+diversity_delta: 0.15
+max_budget_nodes: 64
+halt_threshold: 0.5
+search_prob: 1.0
+
+# Training behaviour
+use_gumbel_branch: true
+reinforce_branch: false
+policy_moves: 16
+policy_weight: 0.1
+value_weight: 0.2
+inter_weight: 0.5
+div_weight: 0.01
+halt_bonus: 0.05

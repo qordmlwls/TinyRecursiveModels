@@ -31,6 +31,11 @@ pip install --no-cache-dir --no-build-isolation adam-atan2
 wandb login YOUR-LOGIN # login if you want the logger to sync results to your Weights & Biases (https://wandb.ai/)
 ```
 
+#### Weights & Biases tips
+
+- Set `WANDB_API_KEY` in your shell (or run `wandb login`) before launching training so runs can sync online.
+- Batch scripts default to `WANDB_MODE=offline`; override with `export WANDB_MODE=online` (or any other mode) before calling `sbatch` if you want live syncing.
+
 ### Dataset Preparation
 
 ```bash
