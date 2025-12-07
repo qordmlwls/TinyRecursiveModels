@@ -38,7 +38,7 @@ fi
 GPUS="${RAW_GPUS}"
 
 common_overrides=(
-  "arch=tr2_test"
+  "arch=tr2"
   "arch.beam_size=${BEAM_SIZE}"
   "arch.branch_factor=${BRANCH_FACTOR}"
   "arch.halt_threshold=${HALT_THRESHOLD}"
@@ -63,10 +63,10 @@ case "${PRESET}" in
       "data_paths=[${DATA_ROOT}/arc1concept-aug-1000]"
       'arch.L_layers=2'
       'arch.H_cycles=3'
-      'arch.L_cycles=3'
+      'arch.L_cycles=4'
       "global_batch_size=${GLOBAL_BATCH_OVERRIDE}"
       "+run_name=${RUN_NAME}"
-      'ema=False'
+      'ema=True'
     )
     ;;
   *)

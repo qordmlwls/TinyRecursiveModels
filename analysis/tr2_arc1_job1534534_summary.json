@@ -1,0 +1,12 @@
+{
+  "last_step": 465730.0,
+  "last_metrics": {
+    "train/accuracy": 0.9992533210734157,
+    "train/lm_loss": 0.022077984627690273,
+    "train/q_halt_loss": 0.11533483769744635,
+    "train/aux_loss": 0.00180334277683869,
+    "train/exact_accuracy": 0.9655172413793104,
+    "train/q_halt_accuracy": 0.9761273209549072,
+    "step": 465730.0
+  }
+}

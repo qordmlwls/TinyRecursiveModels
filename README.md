@@ -140,6 +140,16 @@ arch.H_cycles=3 arch.L_cycles=4 \
 
 *Runtime:* < 24 hours
 
+### Killarney (8x H100 SXM via Slurm)
+
+Killarney provides 8-way H100 SXM performance nodes as documented at https://docs.alliancecan.ca/wiki/Killarney. After creating the local `.venv` described in the Requirements section, submit the warm-up job script that configures the module stack and launches `run_tr2_test.sh` with 8 GPUs:
+
+```bash
+sbatch scripts/tr2_killarney_warmup.sbatch arc1
+```
+
+Set `VENV_PATH` (if your virtualenv is not `.venv` in the repo), `TRM_DATA_ROOT`, or any `TR2_EXTRA_OVERRIDES` as needed before submission. The script requests 1.5 TB RAM, 48 CPU cores (6 per task), and defaults to an offline W&B run using the project API key.
+
 ## Reference
 
 If you find our work useful, please consider citing:
