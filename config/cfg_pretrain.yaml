@@ -40,3 +40,8 @@ min_eval_interval: 0 # when to start the eval
 ema: False # use Exponential-Moving-Average
 ema_rate: 0.999 # EMA-rate
 freeze_weights: False # If True, freeze weights and only learn the embeddings
+
+# Teacher data (TRM-Planner)
+use_teacher_data: false
+teacher_data_dir:
+teacher_quality_thresh:

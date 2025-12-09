@@ -1,9 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=trm_maze_l40
+#SBATCH --job-name=trm_planner_maze_l40
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:l40s:4
 #SBATCH --ntasks-per-node=4
 #SBATCH --account=aip-jjin5
+#SBATCH --partition=gpubase_l40s_b3
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=450G
 #SBATCH --time=1-00:00:00
@@ -12,6 +13,12 @@
 #SBATCH --mail-type=END,FAIL
 
 set -euo pipefail
+
+# Ensure SLURM vars when running locally
+export SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+export SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-6}
+export SLURM_JOB_NUM_NODES=${SLURM_JOB_NUM_NODES:-1}
+export SLURM_JOB_ID=${SLURM_JOB_ID:-local}
 
 module --force purge
 module load StdEnv/2023
@@ -75,6 +82,46 @@ export MASTER_PORT=${MASTER_PORT:-29500}
 
 RUN_NAME="${RUN_NAME:-trm_maze_l40_${SLURM_JOB_ID}}"
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-768}
+ARCH_CONFIG=${ARCH_CONFIG:-trm_planner}
+
+PLANNER_NUM_RUNS=${PLANNER_NUM_RUNS:-2}
+PLANNER_TOP_K=${PLANNER_TOP_K:-2}
+PLANNER_NOISE_STD=${PLANNER_NOISE_STD:-0.02}
+PLANNER_BATCH_SIZE=${PLANNER_BATCH_SIZE:-128}
+PLANNER_SCORE_ALPHA=${PLANNER_SCORE_ALPHA:-1.0}
+PLANNER_SCORE_BETA=${PLANNER_SCORE_BETA:-0.0}
+PLANNER_STEP_PENALTY=${PLANNER_STEP_PENALTY:-0.01}
+TEACHER_DATA_DIR=${TEACHER_DATA_DIR:-${SCRATCH}/trm/planner_outputs/maze_l40}
+TEACHER_CHECKPOINT=${TEACHER_CHECKPOINT:-}
+STUDENT_INIT_CKPT=${STUDENT_INIT_CKPT:-}
+TEACHER_QUALITY_THRESH=${TEACHER_QUALITY_THRESH:-0.5}
+
+if [[ -z "${TEACHER_CHECKPOINT}" ]]; then
+  echo "ERROR: Set TEACHER_CHECKPOINT to the TRM checkpoint for planner data generation." >&2
+  exit 2
+fi
+
+mkdir -p "${TEACHER_DATA_DIR}"
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  echo "[DRY_RUN] Planner + training script configured. Exiting."
+  exit 0
+fi
+
+echo "=== Running Maze planner data generation ==="
+.venv/bin/python -m scripts.generate_trm_teacher_data \
+  checkpoint_path="${TEACHER_CHECKPOINT}" \
+  output_dir="${TEACHER_DATA_DIR}" \
+  data_paths="[${TRM_DATA_ROOT}/maze-30x30-hard-1k]" \
+  global_batch_size=${PLANNER_BATCH_SIZE} \
+  planner.num_runs=${PLANNER_NUM_RUNS} \
+  planner.top_k_per_puzzle=${PLANNER_TOP_K} \
+  planner.noise_std=${PLANNER_NOISE_STD} \
+  planner.score_alpha=${PLANNER_SCORE_ALPHA} \
+  planner.score_beta=${PLANNER_SCORE_BETA} \
+  planner.step_penalty=${PLANNER_STEP_PENALTY}
+
+echo "=== Planner generation complete ==="
 
 cmd=(
   torchrun
@@ -83,7 +130,7 @@ cmd=(
   --rdzv_backend=c10d
   --rdzv_endpoint "${MASTER_ADDR}:${MASTER_PORT}"
   pretrain.py
-  arch=trm
+  "arch=${ARCH_CONFIG}"
   data_paths="[${TRM_DATA_ROOT}/maze-30x30-hard-1k]"
   evaluators="[]"
   epochs=50000
@@ -98,7 +145,14 @@ cmd=(
   arch.L_cycles=4
   "+run_name=${RUN_NAME}"
   ema=True
+  use_teacher_data=True
+  "teacher_data_dir=${TEACHER_DATA_DIR}"
+  "teacher_quality_thresh=${TEACHER_QUALITY_THRESH}"
 )
+
+if [[ -n "${STUDENT_INIT_CKPT}" ]]; then
+  cmd+=("+load_checkpoint=${STUDENT_INIT_CKPT}")
+fi
 
 echo "Launching TRM Maze-Hard training with ${GPUS} L40S GPUs."
 echo "Command: ${cmd[*]}"

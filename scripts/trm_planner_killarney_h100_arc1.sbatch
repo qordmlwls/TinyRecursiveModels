@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=trm_arc1_h100
+#SBATCH --job-name=trm_planner_arc1_h100
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:8
 #SBATCH --ntasks-per-node=8
@@ -13,7 +13,13 @@
 
 set -euo pipefail
 
-# Avoid SKIP_CC_CVMFS undefined errors when sourcing the module environment
+# Ensure SLURM_SUBMIT_DIR defined when running locally
+export SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+export SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-6}
+export SLURM_JOB_NUM_NODES=${SLURM_JOB_NUM_NODES:-1}
+export SLURM_JOB_ID=${SLURM_JOB_ID:-local}
+
+# Environment guard defaults
 export SKIP_CC_CVMFS=${SKIP_CC_CVMFS:-0}
 export FORCE_CC_CVMFS=${FORCE_CC_CVMFS:-0}
 export ZSH_VERSION=${ZSH_VERSION:-0}
@@ -21,7 +27,6 @@ export RSNT_LD_LIBRARY_PATH=${RSNT_LD_LIBRARY_PATH:-}
 export RSNT_SLURM_MPI_TYPE=${RSNT_SLURM_MPI_TYPE:-pmix}
 export SLURM_MPI_TYPE=${SLURM_MPI_TYPE:-pmix}
 
-# Ensure the module command is available
 source /cvmfs/soft.computecanada.ca/config/profile/bash.sh
 
 module --force purge
@@ -89,16 +94,49 @@ fi
 export MASTER_ADDR
 export MASTER_PORT=${MASTER_PORT:-29500}
 
-RUN_NAME="${RUN_NAME:-trm_arc1_h100_${SLURM_JOB_ID}}"
+RUN_NAME="${RUN_NAME:-trm_planner_arc1_h100_${SLURM_JOB_ID}}"
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-768}
-ARCH_CONFIG=${ARCH_CONFIG:-trm}
+ARCH_CONFIG=${ARCH_CONFIG:-trm_planner}
+PLANNER_NUM_RUNS=${PLANNER_NUM_RUNS:-4}
+PLANNER_TOP_K=${PLANNER_TOP_K:-3}
+PLANNER_NOISE_STD=${PLANNER_NOISE_STD:-0.02}
+PLANNER_BATCH_SIZE=${PLANNER_BATCH_SIZE:-128}
+PLANNER_SCORE_ALPHA=${PLANNER_SCORE_ALPHA:-1.0}
+PLANNER_SCORE_BETA=${PLANNER_SCORE_BETA:-0.0}
+PLANNER_STEP_PENALTY=${PLANNER_STEP_PENALTY:-0.01}
+TEACHER_DATA_DIR=${TEACHER_DATA_DIR:-${SCRATCH}/trm/planner_outputs/arc1}
+TEACHER_CHECKPOINT=${TEACHER_CHECKPOINT:-}
+STUDENT_INIT_CKPT=${STUDENT_INIT_CKPT:-}
+TEACHER_QUALITY_THRESH=${TEACHER_QUALITY_THRESH:-0.5}
 
-if [[ -n "${TEACHER_DATA_DIR:-}" ]]; then
-  if [[ ! -d "${TEACHER_DATA_DIR}" ]]; then
-    echo "ERROR: TEACHER_DATA_DIR (${TEACHER_DATA_DIR}) does not exist." >&2
-    exit 2
-  fi
+if [[ -z "${TEACHER_CHECKPOINT}" ]]; then
+  echo "ERROR: Set TEACHER_CHECKPOINT to the TRM checkpoint for planner data generation." >&2
+  exit 2
 fi
+
+mkdir -p "${TEACHER_DATA_DIR}"
+
+echo "Planner outputs will be written to ${TEACHER_DATA_DIR}"
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  echo "[DRY_RUN] Environment prepared. Exiting before running planner/training."
+  exit 0
+fi
+
+echo "=== Running planner data generation ==="
+python -m scripts.generate_trm_teacher_data \
+  checkpoint_path="${TEACHER_CHECKPOINT}" \
+  output_dir="${TEACHER_DATA_DIR}" \
+  data_paths="[${TRM_DATA_ROOT}/arc1concept-aug-1000]" \
+  global_batch_size=${PLANNER_BATCH_SIZE} \
+  planner.num_runs=${PLANNER_NUM_RUNS} \
+  planner.top_k_per_puzzle=${PLANNER_TOP_K} \
+  planner.noise_std=${PLANNER_NOISE_STD} \
+  planner.score_alpha=${PLANNER_SCORE_ALPHA} \
+  planner.score_beta=${PLANNER_SCORE_BETA} \
+  planner.step_penalty=${PLANNER_STEP_PENALTY}
+
+echo "=== Planner data generation completed ==="
 
 cmd=(
   torchrun
@@ -115,13 +153,16 @@ cmd=(
   arch.L_cycles=4
   "+run_name=${RUN_NAME}"
   ema=True
+  use_teacher_data=True
+  "teacher_data_dir=${TEACHER_DATA_DIR}"
+  "teacher_quality_thresh=${TEACHER_QUALITY_THRESH}"
 )
 
-if [[ -n "${TEACHER_DATA_DIR:-}" ]]; then
-  cmd+=("use_teacher_data=True" "teacher_data_dir=${TEACHER_DATA_DIR}")
+if [[ -n "${STUDENT_INIT_CKPT}" ]]; then
+  cmd+=("+load_checkpoint=${STUDENT_INIT_CKPT}")
 fi
 
-echo "Launching TRM ARC-AGI-1 training on 8×H100 GPUs."
+echo "Launching TRM planner-distillation training on 8×H100 GPUs."
 echo "Command: ${cmd[*]}"
 
 exec "${cmd[@]}"

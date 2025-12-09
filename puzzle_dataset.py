@@ -48,12 +48,21 @@ class PuzzleDatasetConfig(pydantic.BaseModel):
     epochs_per_iter: int  # Batch X epochs in an iteration to reduce overhead.
     rank: int
     num_replicas: int
+    use_teacher: bool = False
+    teacher_data_dir: Optional[str] = None
+    teacher_quality_thresh: Optional[float] = None
 
 class PuzzleDataset(IterableDataset):
     def __init__(self, config: PuzzleDatasetConfig, split: str = "train"):
         super().__init__()
         self.config = config
         self.split = split
+        self.use_teacher = config.use_teacher
+        self.teacher_data_dir = config.teacher_data_dir
+        self.teacher_quality_thresh = config.teacher_quality_thresh
+        self._teacher_cache: Dict[int, Optional[Dict[str, np.ndarray]]] = {}
+        if self.use_teacher:
+            assert self.teacher_data_dir is not None, "teacher_data_dir must be provided when use_teacher is True"
 
         # Merge multiple metadata
         prev_seq_len = None
@@ -162,8 +171,69 @@ class PuzzleDataset(IterableDataset):
             }
             batch = {k: np.pad(v, ((0, pad_size), ) + ((0, 0), ) * (v.ndim - 1), constant_values=pad_values[k]) for k, v in batch.items()}
 
+        # Attach planner teacher annotations if requested
+        if self.use_teacher:
+            batch = self._attach_teacher_annotations(batch)
+
         # To tensor
         return {k: torch.from_numpy(v) for k, v in batch.items()}
+
+    def _attach_teacher_annotations(self, batch: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        teacher_tokens = np.full(batch["labels"].shape, IGNORE_LABEL_ID, dtype=np.int32)
+        teacher_steps = np.full((batch["labels"].shape[0],), -1, dtype=np.int32)
+        teacher_logits = np.zeros(
+            (batch["labels"].shape[0], batch["labels"].shape[1], self.metadata.vocab_size),
+            dtype=np.float16
+        )
+        rng = np.random.default_rng()
+
+        for i in range(batch["puzzle_identifiers"].shape[0]):
+            puzzle_id = self._resolve_puzzle_identifier(batch["puzzle_identifiers"][i])
+            entry = self._get_teacher_entry(puzzle_id)
+            if entry is None:
+                continue
+
+            entries = entry.get("entries", [entry])
+            if self.teacher_quality_thresh is not None:
+                entries = [
+                    e for e in entries
+                    if e.get("teacher_loss", None) is not None
+                    and e["teacher_loss"] <= self.teacher_quality_thresh
+                ]
+            if not entries:
+                continue
+
+            selected = entries[int(rng.integers(len(entries)))]
+
+            tokens = np.array(selected.get("tokens"), dtype=np.int32).reshape(-1)
+            max_len = min(tokens.shape[0], teacher_tokens.shape[-1])
+            teacher_tokens[i, :max_len] = tokens[:max_len]
+            teacher_steps[i] = int(selected.get("step", -1))
+
+            if "logits" in selected:
+                logits_arr = np.array(selected["logits"], dtype=np.float16)
+                seq_len = min(logits_arr.shape[0], teacher_logits.shape[1])
+                teacher_logits[i, :seq_len, :] = logits_arr[:seq_len, :]
+
+        batch["teacher_tokens"] = teacher_tokens
+        batch["teacher_steps"] = teacher_steps
+        batch["teacher_logits"] = teacher_logits
+        return batch
+
+    def _resolve_puzzle_identifier(self, identifier: np.ndarray) -> int:
+        arr = np.array(identifier).reshape(-1)
+        return int(arr[0])
+
+    def _get_teacher_entry(self, puzzle_id: int) -> Optional[Dict[str, np.ndarray]]:
+        if puzzle_id in self._teacher_cache:
+            return self._teacher_cache[puzzle_id]
+        path = os.path.join(self.teacher_data_dir, f"{puzzle_id}.pt")
+        if not os.path.exists(path):
+            self._teacher_cache[puzzle_id] = None  # type: ignore
+            return None
+        entry = torch.load(path, map_location="cpu", weights_only=False)
+        self._teacher_cache[puzzle_id] = entry
+        return entry
     
     def _iter_test(self):
         for set_i, (set_name, dataset) in enumerate(self._data.items()):  # type: ignore
@@ -247,4 +317,3 @@ class PuzzleDataset(IterableDataset):
             yield from self._iter_test()
         else:
             yield from self._iter_train()
-

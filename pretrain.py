@@ -92,6 +92,11 @@ class PretrainConfig(pydantic.BaseModel):
     ema_rate: float = 0.999 # EMA-rate
     freeze_weights: bool = False # If True, freeze weights and only learn the embeddings
 
+    # Planner distillation data
+    use_teacher_data: bool = False
+    teacher_data_dir: Optional[str] = None
+    teacher_quality_thresh: Optional[float] = None
+
 @dataclass
 class TrainState:
     model: nn.Module
@@ -104,11 +109,17 @@ class TrainState:
 
 
 def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size: int, **kwargs):
+    use_teacher = config.use_teacher_data and split == "train"
+    teacher_dir = config.teacher_data_dir if use_teacher else None
+    teacher_thresh = config.teacher_quality_thresh if use_teacher else None
     dataset = PuzzleDataset(PuzzleDatasetConfig(
         seed=config.seed,
         dataset_paths=config.data_paths_test if len(config.data_paths_test)>0 and split=="test" else config.data_paths,
         rank=rank,
         num_replicas=world_size,
+        use_teacher=use_teacher,
+        teacher_data_dir=teacher_dir,
+        teacher_quality_thresh=teacher_thresh,
         **kwargs
     ), split=split)
     dataloader = DataLoader(
